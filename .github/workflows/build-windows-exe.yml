@@ -1,8 +1,8 @@
 name: Bundle GnuPG
 
 on:
-  # push:
-  #   branches: [ main ]
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -13,32 +13,36 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install GnuPG
+      - name: Download and Bundle GnuPG
+        shell: pwsh
         run: |
-          # Use Chocolatey to install the official Windows binary
-          choco install gnupg --yes
+          # 1. Setup target paths
+          $targetDir = Join-Path (Get-Location) "resources/bin/gnupg"
+          $installer = "$env:TEMP\gnupg_installer.exe"
           
-          # Add to PATH for the current session
-          echo "C:\Program Files (x86)\gnupg\bin" >> $GITHUB_PATH
+          # Ensure directories exist
+          if (!(Test-Path "resources/bin")) { New-Item -ItemType Directory -Path "resources/bin" -Force }
 
-      - name: Run Prep Script
-        shell: pwsh
-        run: |
-          # The script will now find GnuPG at C:\Program Files (x86)\gnupg
-          ./scripts/prep-gpg.ps1 -Force
+          # 2. Download official GnuPG (matching your version 2.4.8)
+          $url = "https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.4.8_20250514.exe"
+          Write-Host "Downloading from $url..."
+          Invoke-WebRequest -Uri $url -OutFile $installer
 
-      - name: Verify Bundle
-        shell: pwsh
-        run: |
-          if (Test-Path "resources/bin/gnupg/bin/gpg.exe") {
-            Write-Host "GnuPG successfully bundled!"
+          # 3. Silent Extraction to resources folder
+          # /S = Silent mode
+          # /D = Destination directory
+          Write-Host "Extracting to $targetDir..."
+          Start-Process -FilePath $installer -ArgumentList "/S", "/D=$targetDir" -Wait
+
+          # 4. Verification
+          if (Test-Path "$targetDir\bin\gpg.exe") {
+            Write-Host "Successfully bundled GnuPG executables."
+            & "$targetDir\bin\gpg.exe" --version
           } else {
-            throw "GnuPG bundling failed."
+            throw "GnuPG extraction failed!"
           }
 
-      # Optional: Upload the bundled resources as an artifact
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bundled-gpg
-          path: resources/bin/gnupg/
+      - name: Pack Application
+        run: |
+          echo "Proceeding to pack application. GnuPG files are ready in resources/bin/gnupg"
+          # Add your Electron or Python packing command here
