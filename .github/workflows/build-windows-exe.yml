@@ -1,4 +1,4 @@
-name: Fast GnuPG Bundle
+name: GnuPG Bundle (Fast & Stable)
 
 on:
   push:
@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  bundle:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Cache GnuPG
@@ -18,37 +18,29 @@ jobs:
         uses: actions/cache@v4
         with:
           path: resources/bin/gnupg
-          key: gnupg-2.4.8-zip-v1
+          key: gnupg-2.4.8-fast-v2
 
-      - name: Download and Unzip GnuPG
+      - name: Extract GnuPG (No Installer Run)
         if: steps.cache-gnupg.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          # 1. Setup paths
-          $binDir = "resources/bin"
-          if (!(Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force }
-          $zipFile = "$env:TEMP\gnupg.zip"
+          $tempDir = "C:\temp_gpg"
+          $targetDir = Join-Path (Get-Location) "resources/bin/gnupg"
+          $installer = "$env:TEMP\gnupg.exe"
           
-          # 2. Download the PORTABLE version (much smaller and faster)
-          # This is the "w32cli" version which contains the core .exe files you need.
-          $url = "https://gnupg.org/ftp/gcrypt/binary/gnupg-w32cli-2.2.42.zip"
-          Write-Host "Downloading GnuPG Zip via curl..."
-          curl.exe -L $url -o $zipFile
-
-          # 3. Fast Unzip (No installer lag)
-          Write-Host "Unzipping to resources/bin/gnupg..."
-          Expand-Archive -Path $zipFile -DestinationPath "resources/bin/gnupg" -Force
+          # 1. Faster download with curl
+          curl.exe -L "https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.4.8_20250514.exe" -o $installer
           
-          Remove-Item $zipFile
+          # 2. Extract files using 7-Zip (INSTANT - no hanging)
+          # We extract the $OUTDIR which contains the bin/lib/share structure
+          & "C:\Program Files\7-Zip\7z.exe" x $installer "-o$tempDir"
+          
+          # 3. Move only the actual content folder to your resources
+          if (!(Test-Path "resources/bin")) { New-Item -ItemType Directory -Path "resources/bin" -Force }
+          Move-Item -Path "$tempDir\$_OUTDIR\*" -Destination $targetDir -Force
+          
+          Remove-Item $installer, $tempDir -Recurse
 
-      - name: Verify GnuPG
-        shell: pwsh
+      - name: Verify Bundle
         run: |
-          # Note: The zip structure puts gpg.exe in the 'bin' folder of the zip
-          $gpg = "resources/bin/gnupg/bin/gpg.exe"
-          if (Test-Path $gpg) {
-            Write-Host "GnuPG Ready!"
-            & $gpg --version
-          } else {
-            throw "GnuPG missing at $gpg"
-          }
+          ./resources/bin/gnupg/bin/gpg.exe --version
