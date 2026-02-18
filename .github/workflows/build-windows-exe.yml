@@ -1,0 +1,114 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          # Do NOT enable npm cache unless package-lock.json is committed.
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Git is OK via choco. (Your request: GnuPG must come from official website, not choco)
+      - name: Install Git
+        run: choco install git -y
+
+      - name: Download + Install Native GnuPG (official)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $indexUrl = "https://gnupg.org/ftp/gcrypt/binary/"
+          $html = (Invoke-WebRequest -Uri $indexUrl -UseBasicParsing).Content
+
+          $rx = [regex]'gnupg-w32-(\d+\.\d+\.\d+)_([0-9]{8})\.exe'
+          $matches = $rx.Matches($html)
+          if ($matches.Count -lt 1) { throw "Could not find gnupg-w32 installer in $indexUrl" }
+
+          $latest = $matches | Sort-Object { $_.Groups[2].Value } -Descending | Select-Object -First 1
+          $fileName = $latest.Value
+          $downloadUrl = "$indexUrl$fileName"
+
+          $installer = Join-Path $env:RUNNER_TEMP $fileName
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $installer
+
+          $installDir = Join-Path $env:RUNNER_TEMP "gnupg"
+          if (Test-Path $installDir) { Remove-Item -Recurse -Force $installDir }
+          New-Item -ItemType Directory -Path $installDir | Out-Null
+
+          # Silent install into a local folder (no admin needed)
+          Start-Process -FilePath $installer -ArgumentList "/S", "/D=$installDir" -Wait -NoNewWindow
+
+          "WHO_GNUPG_ROOT=$installDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Installed GnuPG into: $installDir"
+
+      - name: Install dependencies (works with or without lock file)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (Test-Path "package-lock.json") {
+            npm ci
+          } else {
+            npm install --no-audit --no-fund
+            npm i --package-lock-only --no-audit --no-fund
+          }
+
+      - name: Prepare embedded tools (bundle into resources)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          ./scripts/prep-tools.ps1 -Force -GnuPgRoot "$env:WHO_GNUPG_ROOT"
+
+          if (!(Test-Path "resources/bin/git/cmd/git.exe")) { throw "Git not bundled: resources/bin/git/cmd/git.exe" }
+          if (!(Test-Path "resources/bin/gnupg/bin/gpg.exe")) { throw "GnuPG not bundled: resources/bin/gnupg/bin/gpg.exe" }
+          if (!(Test-Path "resources/bin/gnupg/bin/gpgconf.exe")) { throw "GnuPG not bundled: resources/bin/gnupg/bin/gpgconf.exe" }
+          if (!(Test-Path "resources/python/python.exe")) { throw "Python not bundled: resources/python/python.exe" }
+
+          # sanity: ensure we bundled native Windows gpg (no MSYS/cygwin)
+          & "resources/bin/gnupg/bin/gpg.exe" --version | Select-Object -First 5 | ForEach-Object { Write-Host $_ }
+
+      - name: Build backend exe (PyInstaller)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./build/backend/build_backend.ps1
+
+          if (!(Test-Path "resources/backend/wizard-backend/backend-wizard.exe")) {
+            throw "backend-wizard.exe not found at resources/backend/wizard-backend/backend-wizard.exe"
+          }
+
+      - name: Ensure runtime icons exist in resources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (!(Test-Path "resources/icons")) { New-Item -ItemType Directory -Path "resources/icons" | Out-Null }
+          # If your repo has icons in assets/icons, copy them (safe if folder doesn't exist)
+          if (Test-Path "assets/icons") {
+            Copy-Item -Recurse -Force "assets/icons/*" "resources/icons/" -ErrorAction SilentlyContinue
+          }
+
+      - name: Build installer (NSIS, no signing)
+        run: npm run dist:nosign
+
+      - name: Upload installer exe only
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/*.exe
+            # dist/*.msi
+            # dist/*.zip
