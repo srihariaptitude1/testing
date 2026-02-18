@@ -13,43 +13,42 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # STEP 1: Cache GnuPG files to skip download in future runs
       - name: Cache GnuPG
         id: cache-gnupg
         uses: actions/cache@v4
         with:
           path: resources/bin/gnupg
-          key: gnupg-2.4.8-v1
+          key: gnupg-2.4.8-zip-v1
 
-      # STEP 2: Only download and extract if cache was NOT found
-      - name: Download and Bundle GnuPG
+      - name: Download and Unzip GnuPG
         if: steps.cache-gnupg.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $targetDir = Join-Path (Get-Location) "resources/bin/gnupg"
-          $installer = "$env:TEMP\gnupg_installer.exe"
+          # 1. Setup paths
+          $binDir = "resources/bin"
+          if (!(Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force }
+          $zipFile = "$env:TEMP\gnupg.zip"
           
-          if (!(Test-Path "resources/bin")) { New-Item -ItemType Directory -Path "resources/bin" -Force }
+          # 2. Download the PORTABLE version (much smaller and faster)
+          # This is the "w32cli" version which contains the core .exe files you need.
+          $url = "https://gnupg.org/ftp/gcrypt/binary/gnupg-w32cli-2.2.42.zip"
+          Write-Host "Downloading GnuPG Zip via curl..."
+          curl.exe -L $url -o $zipFile
 
-          # Using curl.exe is much faster than Invoke-WebRequest
-          $url = "https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.4.8_20250514.exe"
-          Write-Host "Downloading via curl..."
-          curl.exe -L $url -o $installer
-
-          Write-Host "Extracting to $targetDir..."
-          # Silent extraction to the specific resources folder
-          Start-Process -FilePath $installer -ArgumentList "/S", "/D=$targetDir" -Wait
+          # 3. Fast Unzip (No installer lag)
+          Write-Host "Unzipping to resources/bin/gnupg..."
+          Expand-Archive -Path $zipFile -DestinationPath "resources/bin/gnupg" -Force
           
-          Remove-Item $installer
+          Remove-Item $zipFile
 
-      # STEP 3: Always verify the executables exist
       - name: Verify GnuPG
         shell: pwsh
         run: |
+          # Note: The zip structure puts gpg.exe in the 'bin' folder of the zip
           $gpg = "resources/bin/gnupg/bin/gpg.exe"
           if (Test-Path $gpg) {
-            Write-Host "GnuPG is ready for packing."
+            Write-Host "GnuPG Ready!"
             & $gpg --version
           } else {
-            throw "GnuPG missing from resources folder!"
+            throw "GnuPG missing at $gpg"
           }
