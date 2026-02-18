@@ -44,3 +44,9 @@ jobs:
       - name: Verify Bundle
         run: |
           ./resources/bin/gnupg/bin/gpg.exe --version
+      - name: Upload GnuPG Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: gnupg-binaries  # This is the name you will see on GitHub
+          path: resources/bin/gnupg/
+          retention-days: 5      # How long GitHub keeps the file (default is 90)
