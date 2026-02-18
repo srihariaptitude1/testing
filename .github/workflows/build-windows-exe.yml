@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-runs-on: windows-latest
+    runs-on: windows-latest
 
     steps:
       - name: Checkout code
@@ -21,7 +21,7 @@ jobs:
           path: resources/bin/gnupg
           key: gnupg-2.4.8-v1
 
-      # STEP 2: Only download if cache was NOT found
+      # STEP 2: Only download and extract if cache was NOT found
       - name: Download and Bundle GnuPG
         if: steps.cache-gnupg.outputs.cache-hit != 'true'
         shell: pwsh
@@ -37,18 +37,19 @@ jobs:
           curl.exe -L $url -o $installer
 
           Write-Host "Extracting to $targetDir..."
+          # Silent extraction to the specific resources folder
           Start-Process -FilePath $installer -ArgumentList "/S", "/D=$targetDir" -Wait
           
           Remove-Item $installer
 
-      # STEP 3: Always verify (Works whether from Cache or Download)
+      # STEP 3: Always verify the executables exist
       - name: Verify GnuPG
         shell: pwsh
         run: |
           $gpg = "resources/bin/gnupg/bin/gpg.exe"
           if (Test-Path $gpg) {
-            Write-Host "GnuPG ready."
+            Write-Host "GnuPG is ready for packing."
             & $gpg --version
           } else {
-            throw "GnuPG missing!"
+            throw "GnuPG missing from resources folder!"
           }
