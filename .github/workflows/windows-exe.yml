@@ -1,0 +1,197 @@
+name: Windows EXE (auto-bundle git + gnupg + python into resources)
+
+on:
+  # push:
+  #   branches: [ main ]
+  #   tags: [ "v*" ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-win:
+    runs-on: windows-latest
+
+    env:
+      # Pin versions (reproducible builds)
+      GITFORWINDOWS_TAG: "v2.53.0.windows.1"
+      MINGIT_ZIP: "MinGit-2.53.0-64-bit.zip"
+
+      GNUPG_EXE: "gnupg-w32-2.4.8_20250514.exe"
+
+      PY_EMBED_VER: "3.13.12"
+      PY_EMBED_ZIP: "python-3.13.12-embeddable-amd64.zip"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Setup Python (build-time only)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # Cache the downloaded/extracted tools
+      - name: Cache bundled tools
+        id: cache-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            resources/bin/git
+            resources/bin/gnupg
+            resources/python
+          key: tools-win-${{ env.GITFORWINDOWS_TAG }}-${{ env.GNUPG_EXE }}-py${{ env.PY_EMBED_VER }}-v1
+
+      - name: Prepare resources folders
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path resources/bin | Out-Null
+          New-Item -ItemType Directory -Force -Path resources/python | Out-Null
+
+      # ----------------------------
+      # Bundle Git -> resources/bin/git
+      # ----------------------------
+      - name: Bundle MinGit (Git for Windows)
+        shell: pwsh
+        run: |
+          $target = "resources/bin/git"
+          if (Test-Path "$target/cmd/git.exe") { Write-Host "MinGit already present"; exit 0 }
+
+          $url = "https://github.com/git-for-windows/git/releases/download/$env:GITFORWINDOWS_TAG/$env:MINGIT_ZIP"
+          $zip = Join-Path $env:TEMP $env:MINGIT_ZIP
+          $tmp = Join-Path $env:TEMP ("mingit_" + [Guid]::NewGuid().ToString("N"))
+
+          curl.exe -L $url -o $zip
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+
+          $gitDir = Get-ChildItem -Path $tmp -Directory -Recurse |
+            Where-Object { Test-Path (Join-Path $_.FullName "cmd\git.exe") } |
+            Select-Object -First 1
+
+          if (-not $gitDir) { throw "MinGit extraction failed: cmd\git.exe not found." }
+
+          Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          Copy-Item -Path (Join-Path $gitDir.FullName "*") -Destination $target -Recurse -Force
+
+          Remove-Item -Recurse -Force $tmp
+          Remove-Item -Force $zip
+
+      - name: Verify Git bundle
+        shell: pwsh
+        run: |
+          ./resources/bin/git/cmd/git.exe --version
+
+      # ----------------------------
+      # Bundle GnuPG -> resources/bin/gnupg
+      # (fast extraction using 7zip like your working workflow)
+      # ----------------------------
+      - name: Bundle GnuPG
+        shell: pwsh
+        run: |
+          $targetDir = "resources/bin/gnupg"
+          if (Test-Path "$targetDir/bin/gpg.exe") { Write-Host "GnuPG already present"; exit 0 }
+
+          $installer = Join-Path $env:TEMP $env:GNUPG_EXE
+          $tmp = "C:\temp_gpg_$([Guid]::NewGuid().ToString('N'))"
+
+          curl.exe -L "https://gnupg.org/ftp/gcrypt/binary/$env:GNUPG_EXE" -o $installer
+          & "C:\Program Files\7-Zip\7z.exe" x $installer "-o$tmp" | Out-Null
+
+          $gpgDir = Get-ChildItem -Path $tmp -Directory -Recurse |
+            Where-Object { Test-Path (Join-Path $_.FullName "bin\gpg.exe") } |
+            Select-Object -First 1
+
+          if (-not $gpgDir) { throw "GnuPG extraction failed: bin\gpg.exe not found." }
+
+          Remove-Item -Recurse -Force $targetDir -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          Copy-Item -Path (Join-Path $gpgDir.FullName "*") -Destination $targetDir -Recurse -Force
+
+          Remove-Item -Recurse -Force $tmp
+          Remove-Item -Force $installer
+
+      - name: Verify GnuPG bundle
+        shell: pwsh
+        run: |
+          ./resources/bin/gnupg/bin/gpg.exe --version
+          ./resources/bin/gnupg/bin/gpgconf.exe --version
+
+      # ----------------------------
+      # Bundle Python embeddable -> resources/python
+      # ----------------------------
+      - name: Bundle Python embeddable
+        shell: pwsh
+        run: |
+          $target = "resources/python"
+          if (Test-Path "$target/python.exe") { Write-Host "Python already present"; exit 0 }
+
+          $zipName = $env:PY_EMBED_ZIP
+          $url = "https://www.python.org/ftp/python/$env:PY_EMBED_VER/$zipName"
+          $zip = Join-Path $env:TEMP $zipName
+
+          curl.exe -L $url -o $zip
+          Expand-Archive -Path $zip -DestinationPath $target -Force
+          Remove-Item -Force $zip
+
+          if (-not (Test-Path "$target/python.exe")) { throw "python.exe missing after extraction." }
+
+      - name: Verify Python bundle
+        shell: pwsh
+        run: |
+          ./resources/python/python.exe -V
+
+      # ----------------------------
+      # Build backend EXE (PyInstaller)
+      # ----------------------------
+      - name: Install Python deps (build-time)
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build backend EXE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path backend-dist/wizard-backend | Out-Null
+          pyinstaller wizard-backend.spec --noconfirm --clean --distpath backend-dist/wizard-backend --workpath build-backend
+          if (-not (Test-Path "backend-dist/wizard-backend/wizard-backend.exe")) {
+            throw "wizard-backend.exe not found in backend-dist/wizard-backend"
+          }
+
+      # ----------------------------
+      # Build Electron Windows installer / EXE
+      # ----------------------------
+      - name: Install Node deps
+        shell: pwsh
+        run: |
+          npm ci --no-audit --no-fund
+
+      - name: Build Windows artifacts
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx electron-builder --win nsis
+
+      - name: Upload dist artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-dist
+          path: dist/**
+          retention-days: 7
+
+      - name: Publish to GitHub Release (tag only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
