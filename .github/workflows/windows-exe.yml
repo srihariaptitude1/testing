@@ -1,9 +1,6 @@
-name: Windows EXE (Auto-Bundle Tools)
+name: Windows EXE Build
 
 on:
-  push:
-    branches: [ main ]
-    tags: [ "v*" ]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +11,6 @@ jobs:
     runs-on: windows-latest
 
     env:
-      # Pin versions for reproducibility
       GIT_TAG: "v2.47.1.windows.1"
       GIT_ZIP: "MinGit-2.47.1-64-bit.zip"
       GNUPG_EXE: "gnupg-w32-2.4.5_20240307.exe"
@@ -22,100 +18,59 @@ jobs:
       PY_ZIP: "python-3.13.1-embeddable-amd64.zip"
 
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: 'npm'
 
-      - name: Setup Python (Build-time only)
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
 
-      - name: Cache Bundled Tools
-        id: cache-tools
-        uses: actions/cache@v4
-        with:
-          path: |
-            resources/bin/git
-            resources/bin/gnupg
-            resources/python
-          key: tools-v1-${{ env.GIT_TAG }}-${{ env.PY_VER }}
-
-      - name: Create Resource Directories
+      - name: Prepare Directories
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path resources/bin/git
-          New-Item -ItemType Directory -Force -Path resources/bin/gnupg
-          New-Item -ItemType Directory -Force -Path resources/python
+          mkdir -Force resources/bin/git, resources/bin/gnupg, resources/python, build, backend-dist/wizard-backend
 
-      # --- BUNDLE GIT ---
-      - name: Bundle MinGit
-        if: steps.cache-tools.outputs.cache-hit != 'true'
+      - name: Download External Tools
         shell: pwsh
         run: |
-          $url = "https://github.com/git-for-windows/git/releases/download/$env:GIT_TAG/$env:GIT_ZIP"
-          $dest = "resources/bin/git"
-          Write-Host "Downloading Git..."
-          curl.exe -L $url -o git.zip
-          Expand-Archive -Path git.zip -DestinationPath $dest -Force
-          Remove-Item git.zip
+          # Download MinGit
+          curl.exe -L "https://github.com/git-for-windows/git/releases/download/$env:GIT_TAG/$env:GIT_ZIP" -o git.zip
+          Expand-Archive -Path git.zip -DestinationPath resources/bin/git -Force
+          # Download GnuPG
+          curl.exe -L "https://gnupg.org/ftp/gcrypt/binary/$env:GNUPG_EXE" -o gpg.exe
+          & "C:\Program Files\7-Zip\7z.exe" x gpg.exe "-oresources/bin/gnupg" -y
+          # Download Python
+          curl.exe -L "https://www.python.org/ftp/python/$env:PY_VER/$env:PY_ZIP" -o py.zip
+          Expand-Archive -Path py.zip -DestinationPath resources/python -Force
+          Remove-Item git.zip, gpg.exe, py.zip
 
-      # --- BUNDLE GNUPG ---
-      - name: Bundle GnuPG
-        if: steps.cache-tools.outputs.cache-hit != 'true'
+      - name: Build Python Backend
         shell: pwsh
         run: |
-          $url = "https://gnupg.org/ftp/gcrypt/binary/$env:GNUPG_EXE"
-          $temp_installer = "gpg_setup.exe"
-          $extract_path = "C:\temp_gpg"
-          
-          curl.exe -L $url -o $temp_installer
-          # Using 7-Zip (pre-installed on GitHub Runners) to extract the installer without running it
-          & "C:\Program Files\7-Zip\7z.exe" x $temp_installer "-o$extract_path" -y
-          
-          # Move only the core bin/lib/share files to our resources folder
-          Copy-Item -Path "$extract_path\*" -Destination "resources/bin/gnupg" -Recurse -Force
-          Remove-Item -Recurse -Force $extract_path
-          Remove-Item $temp_installer
+          pip install pyinstaller -r requirements.txt
+          pyinstaller --noconfirm --onedir --windowed --distpath backend-dist --name wizard-backend backend/server.py
 
-      # --- BUNDLE PYTHON ---
-      - name: Bundle Python Embeddable
-        if: steps.cache-tools.outputs.cache-hit != 'true'
+      - name: Build Electron Installer
         shell: pwsh
         run: |
-          $url = "https://www.python.org/ftp/python/$env:PY_VER/$env:PY_ZIP"
-          $dest = "resources/python"
-          curl.exe -L $url -o python.zip
-          Expand-Archive -Path python.zip -DestinationPath $dest -Force
-          Remove-Item python.zip
-
-      - name: Verify Bundles
-        shell: pwsh
-        run: |
-          Write-Host "Verifying Git..."
-          ./resources/bin/git/cmd/git.exe --version
-          Write-Host "Verifying GnuPG..."
-          ./resources/bin/gnupg/bin/gpg.exe --version
-          Write-Host "Verifying Python..."
-          ./resources/python/python.exe --version
-
-      # --- BUILD STEP ---
-      - name: Build App
-        shell: pwsh
-        run: |
-          npm ci
-          # Ensure your electron-builder config points to the 'resources' folder
+          npm install
           npx electron-builder --win nsis
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: windows-installer
-          path: dist/*.exe
+          tag_name: "v1.0.${{ github.run_number }}"
+          name: "Build v1.0.${{ github.run_number }}"
+          draft: false
+          prerelease: false
+          files: dist/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
