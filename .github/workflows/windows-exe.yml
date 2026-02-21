@@ -17,9 +17,7 @@ jobs:
       # Pin versions (reproducible builds)
       GITFORWINDOWS_TAG: "v2.53.0.windows.1"
       PORTABLEGIT_EXE: "PortableGit-2.53.0-64-bit.7z.exe"
-
       GNUPG_EXE: "gnupg-w32-2.4.8_20250514.exe"
-
       PY_EMBED_VER: "3.13.12"
       PY_EMBED_ZIP: "python-3.13.12-embeddable-amd64.zip"
 
@@ -61,7 +59,9 @@ jobs:
         shell: pwsh
         run: |
           $target = "resources/bin/git"
-          if (Test-Path "$target/cmd/git.exe" -or Test-Path "$target/bin/git.exe" -or Test-Path "$target/mingw64/bin/git.exe") {
+          
+          # Check for git in multiple possible paths
+          if (Test-Path "$target/cmd/git.exe" -or (Test-Path "$target/bin/git.exe") -or (Test-Path "$target/mingw64/bin/git.exe")) {
             Write-Host "Git already present."
             exit 0
           }
@@ -140,13 +140,7 @@ jobs:
           $installer = Join-Path $env:TEMP $env:GNUPG_EXE
           $tmp = "C:\temp_gpg_$([Guid]::NewGuid().ToString('N'))"
 
-          Write-Host "Downloading GnuPG..."
           curl.exe -L "https://gnupg.org/ftp/gcrypt/binary/$env:GNUPG_EXE" -o $installer
-          if (-not (Test-Path $installer)) {
-            throw "Download failed for GnuPG."
-          }
-
-          Write-Host "Extracting GnuPG..."
           & "C:\Program Files\7-Zip\7z.exe" x $installer "-o$tmp" | Out-Null
 
           $gpgRoot = $null
@@ -187,13 +181,7 @@ jobs:
           $url = "https://www.python.org/ftp/python/$env:PY_EMBED_VER/$zipName"
           $zip = Join-Path $env:TEMP $zipName
 
-          Write-Host "Downloading Python..."
           curl.exe -L $url -o $zip
-          if (-not (Test-Path $zip)) {
-            throw "Download failed for Python."
-          }
-
-          Write-Host "Extracting Python..."
           Expand-Archive -Path $zip -DestinationPath $target -Force
           Remove-Item -Force $zip
 
