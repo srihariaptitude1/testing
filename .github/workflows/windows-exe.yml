@@ -39,16 +39,14 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      # Cache the downloaded/extracted tools
       - name: Cache bundled tools
-        id: cache-tools
         uses: actions/cache@v4
         with:
           path: |
             resources/bin/git
             resources/bin/gnupg
             resources/python
-          key: tools-win-${{ env.GITFORWINDOWS_TAG }}-${{ env.GNUPG_EXE }}-py${{ env.PY_EMBED_VER }}-v1
+          key: tools-win-${{ env.GITFORWINDOWS_TAG }}-${{ env.GNUPG_EXE }}-py${{ env.PY_EMBED_VER }}-v2
 
       - name: Prepare resources folders
         shell: pwsh
@@ -57,14 +55,16 @@ jobs:
           New-Item -ItemType Directory -Force -Path resources/python | Out-Null
 
       # ----------------------------
-      # Bundle Git -> resources/bin/git (PortableGit, reliable layout)
+      # Bundle Git -> resources/bin/git (PortableGit)
+      # Fix: PortableGit often extracts directly into $tmp (no top folder),
+      # so we must check $tmp itself + fallback to cmd/bin/mingw64 paths.
       # ----------------------------
       - name: Bundle Git (PortableGit)
         shell: pwsh
         run: |
           $target = "resources/bin/git"
-          if (Test-Path "$target/cmd/git.exe") {
-            Write-Host "PortableGit already present."
+          if (Test-Path "$target/cmd/git.exe" -or Test-Path "$target/bin/git.exe" -or Test-Path "$target/mingw64/bin/git.exe") {
+            Write-Host "Git already present."
             exit 0
           }
 
@@ -73,24 +73,38 @@ jobs:
           $tmp = Join-Path $env:TEMP ("portablegit_" + [Guid]::NewGuid().ToString("N"))
 
           curl.exe -L $url -o $installer
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
-          # Extract PortableGit .7z.exe using 7-Zip
           & "C:\Program Files\7-Zip\7z.exe" x $installer "-o$tmp" | Out-Null
 
-          # Find folder containing cmd\git.exe
-          $gitDir = Get-ChildItem -Path $tmp -Directory -Recurse |
-            Where-Object { Test-Path (Join-Path $_.FullName "cmd\git.exe") } |
-            Select-Object -First 1
+          function HasGit($p) {
+            return (Test-Path (Join-Path $p "cmd\git.exe")) -or
+                   (Test-Path (Join-Path $p "bin\git.exe")) -or
+                   (Test-Path (Join-Path $p "mingw64\bin\git.exe"))
+          }
 
-          if (-not $gitDir) {
-            Write-Host "PortableGit extraction content:"
-            Get-ChildItem -Path $tmp -Recurse -Depth 3 | Select-Object FullName
-            throw "PortableGit extraction failed: cmd\git.exe not found."
+          $gitRoot = $null
+
+          # 1) Check tmp itself first (common case)
+          if (HasGit $tmp) {
+            $gitRoot = $tmp
+          } else {
+            # 2) Otherwise search subdirectories for a folder that contains git
+            $gitRoot = Get-ChildItem -Path $tmp -Directory -Recurse |
+              Where-Object { HasGit $_.FullName } |
+              Select-Object -First 1 |
+              ForEach-Object { $_.FullName }
+          }
+
+          if (-not $gitRoot) {
+            Write-Host "PortableGit extraction listing (first 200 items):"
+            Get-ChildItem -Path $tmp -Recurse -File | Select-Object -First 200 FullName
+            throw "PortableGit extraction failed: git.exe not found in cmd/bin/mingw64/bin."
           }
 
           Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $target | Out-Null
-          Copy-Item -Path (Join-Path $gitDir.FullName "*") -Destination $target -Recurse -Force
+          Copy-Item -Path (Join-Path $gitRoot "*") -Destination $target -Recurse -Force
 
           Remove-Item -Recurse -Force $tmp
           Remove-Item -Force $installer
@@ -98,7 +112,15 @@ jobs:
       - name: Verify Git bundle
         shell: pwsh
         run: |
-          ./resources/bin/git/cmd/git.exe --version
+          if (Test-Path "./resources/bin/git/cmd/git.exe") {
+            ./resources/bin/git/cmd/git.exe --version
+          } elseif (Test-Path "./resources/bin/git/bin/git.exe") {
+            ./resources/bin/git/bin/git.exe --version
+          } elseif (Test-Path "./resources/bin/git/mingw64/bin/git.exe") {
+            ./resources/bin/git/mingw64/bin/git.exe --version
+          } else {
+            throw "No git.exe found after bundling."
+          }
 
       # ----------------------------
       # Bundle GnuPG -> resources/bin/gnupg
@@ -107,10 +129,7 @@ jobs:
         shell: pwsh
         run: |
           $targetDir = "resources/bin/gnupg"
-          if (Test-Path "$targetDir/bin/gpg.exe") {
-            Write-Host "GnuPG already present."
-            exit 0
-          }
+          if (Test-Path "$targetDir/bin/gpg.exe") { Write-Host "GnuPG already present."; exit 0 }
 
           $installer = Join-Path $env:TEMP $env:GNUPG_EXE
           $tmp = "C:\temp_gpg_$([Guid]::NewGuid().ToString('N'))"
@@ -118,15 +137,21 @@ jobs:
           curl.exe -L "https://gnupg.org/ftp/gcrypt/binary/$env:GNUPG_EXE" -o $installer
           & "C:\Program Files\7-Zip\7z.exe" x $installer "-o$tmp" | Out-Null
 
-          $gpgDir = Get-ChildItem -Path $tmp -Directory -Recurse |
-            Where-Object { Test-Path (Join-Path $_.FullName "bin\gpg.exe") } |
-            Select-Object -First 1
+          $gpgRoot = $null
+          if (Test-Path (Join-Path $tmp "bin\gpg.exe")) {
+            $gpgRoot = $tmp
+          } else {
+            $gpgRoot = Get-ChildItem -Path $tmp -Directory -Recurse |
+              Where-Object { Test-Path (Join-Path $_.FullName "bin\gpg.exe") } |
+              Select-Object -First 1 |
+              ForEach-Object { $_.FullName }
+          }
 
-          if (-not $gpgDir) { throw "GnuPG extraction failed: bin\gpg.exe not found." }
+          if (-not $gpgRoot) { throw "GnuPG extraction failed: bin\gpg.exe not found." }
 
           Remove-Item -Recurse -Force $targetDir -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-          Copy-Item -Path (Join-Path $gpgDir.FullName "*") -Destination $targetDir -Recurse -Force
+          Copy-Item -Path (Join-Path $gpgRoot "*") -Destination $targetDir -Recurse -Force
 
           Remove-Item -Recurse -Force $tmp
           Remove-Item -Force $installer
@@ -144,10 +169,7 @@ jobs:
         shell: pwsh
         run: |
           $target = "resources/python"
-          if (Test-Path "$target/python.exe") {
-            Write-Host "Python embeddable already present."
-            exit 0
-          }
+          if (Test-Path "$target/python.exe") { Write-Host "Python already present."; exit 0 }
 
           $zipName = $env:PY_EMBED_ZIP
           $url = "https://www.python.org/ftp/python/$env:PY_EMBED_VER/$zipName"
