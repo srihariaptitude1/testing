@@ -1,9 +1,9 @@
-name: Windows EXE (auto-bundle git + gnupg + python into resources)
+name: Build Windows EXE (auto-bundle git + gnupg + python into resources)
 
 on:
-  # push:
-  #   branches: [ main ]
-  #   tags: [ "v*" ]
+  push:
+    branches: [ main ]
+    tags: [ "v*" ]
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ jobs:
     env:
       # Pin versions (reproducible builds)
       GITFORWINDOWS_TAG: "v2.53.0.windows.1"
-      MINGIT_ZIP: "MinGit-2.53.0-64-bit.zip"
+      PORTABLEGIT_EXE: "PortableGit-2.53.0-64-bit.7z.exe"
 
       GNUPG_EXE: "gnupg-w32-2.4.8_20250514.exe"
 
@@ -57,33 +57,43 @@ jobs:
           New-Item -ItemType Directory -Force -Path resources/python | Out-Null
 
       # ----------------------------
-      # Bundle Git -> resources/bin/git
+      # Bundle Git -> resources/bin/git (PortableGit, reliable layout)
       # ----------------------------
-      - name: Bundle MinGit (Git for Windows)
+      - name: Bundle Git (PortableGit)
         shell: pwsh
         run: |
           $target = "resources/bin/git"
-          if (Test-Path "$target/cmd/git.exe") { Write-Host "MinGit already present"; exit 0 }
+          if (Test-Path "$target/cmd/git.exe") {
+            Write-Host "PortableGit already present."
+            exit 0
+          }
 
-          $url = "https://github.com/git-for-windows/git/releases/download/$env:GITFORWINDOWS_TAG/$env:MINGIT_ZIP"
-          $zip = Join-Path $env:TEMP $env:MINGIT_ZIP
-          $tmp = Join-Path $env:TEMP ("mingit_" + [Guid]::NewGuid().ToString("N"))
+          $url = "https://github.com/git-for-windows/git/releases/download/$env:GITFORWINDOWS_TAG/$env:PORTABLEGIT_EXE"
+          $installer = Join-Path $env:TEMP $env:PORTABLEGIT_EXE
+          $tmp = Join-Path $env:TEMP ("portablegit_" + [Guid]::NewGuid().ToString("N"))
 
-          curl.exe -L $url -o $zip
-          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+          curl.exe -L $url -o $installer
 
+          # Extract PortableGit .7z.exe using 7-Zip
+          & "C:\Program Files\7-Zip\7z.exe" x $installer "-o$tmp" | Out-Null
+
+          # Find folder containing cmd\git.exe
           $gitDir = Get-ChildItem -Path $tmp -Directory -Recurse |
             Where-Object { Test-Path (Join-Path $_.FullName "cmd\git.exe") } |
             Select-Object -First 1
 
-          if (-not $gitDir) { throw "MinGit extraction failed: cmd\git.exe not found." }
+          if (-not $gitDir) {
+            Write-Host "PortableGit extraction content:"
+            Get-ChildItem -Path $tmp -Recurse -Depth 3 | Select-Object FullName
+            throw "PortableGit extraction failed: cmd\git.exe not found."
+          }
 
           Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $target | Out-Null
           Copy-Item -Path (Join-Path $gitDir.FullName "*") -Destination $target -Recurse -Force
 
           Remove-Item -Recurse -Force $tmp
-          Remove-Item -Force $zip
+          Remove-Item -Force $installer
 
       - name: Verify Git bundle
         shell: pwsh
@@ -92,13 +102,15 @@ jobs:
 
       # ----------------------------
       # Bundle GnuPG -> resources/bin/gnupg
-      # (fast extraction using 7zip like your working workflow)
       # ----------------------------
       - name: Bundle GnuPG
         shell: pwsh
         run: |
           $targetDir = "resources/bin/gnupg"
-          if (Test-Path "$targetDir/bin/gpg.exe") { Write-Host "GnuPG already present"; exit 0 }
+          if (Test-Path "$targetDir/bin/gpg.exe") {
+            Write-Host "GnuPG already present."
+            exit 0
+          }
 
           $installer = Join-Path $env:TEMP $env:GNUPG_EXE
           $tmp = "C:\temp_gpg_$([Guid]::NewGuid().ToString('N'))"
@@ -132,7 +144,10 @@ jobs:
         shell: pwsh
         run: |
           $target = "resources/python"
-          if (Test-Path "$target/python.exe") { Write-Host "Python already present"; exit 0 }
+          if (Test-Path "$target/python.exe") {
+            Write-Host "Python embeddable already present."
+            exit 0
+          }
 
           $zipName = $env:PY_EMBED_ZIP
           $url = "https://www.python.org/ftp/python/$env:PY_EMBED_VER/$zipName"
@@ -176,7 +191,7 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
 
-      - name: Build Windows artifacts
+      - name: Build Windows artifacts (NSIS)
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
