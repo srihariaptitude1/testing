@@ -1,4 +1,4 @@
-name: Build Windows EXE (auto-bundle git + gnupg + python into resources)
+name: Windows EXE (Auto-Bundle Tools)
 
 on:
   push:
@@ -14,227 +14,108 @@ jobs:
     runs-on: windows-latest
 
     env:
-      # Pin versions (reproducible builds)
-      GITFORWINDOWS_TAG: "v2.53.0.windows.1"
-      PORTABLEGIT_EXE: "PortableGit-2.53.0-64-bit.7z.exe"
-      GNUPG_EXE: "gnupg-w32-2.4.8_20250514.exe"
-      PY_EMBED_VER: "3.13.12"
-      PY_EMBED_ZIP: "python-3.13.12-embeddable-amd64.zip"
+      # Pin versions for reproducibility
+      GIT_TAG: "v2.47.1.windows.1"
+      GIT_ZIP: "MinGit-2.47.1-64-bit.zip"
+      GNUPG_EXE: "gnupg-w32-2.4.5_20240307.exe"
+      PY_VER: "3.13.1"
+      PY_ZIP: "python-3.13.1-embeddable-amd64.zip"
 
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
+          cache: 'npm'
 
-      - name: Setup Python (build-time only)
+      - name: Setup Python (Build-time only)
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-          cache: pip
 
-      - name: Cache bundled tools
+      - name: Cache Bundled Tools
+        id: cache-tools
         uses: actions/cache@v4
         with:
           path: |
             resources/bin/git
             resources/bin/gnupg
             resources/python
-          key: tools-win-${{ env.GITFORWINDOWS_TAG }}-${{ env.GNUPG_EXE }}-py${{ env.PY_EMBED_VER }}-v2
+          key: tools-v1-${{ env.GIT_TAG }}-${{ env.PY_VER }}
 
-      - name: Prepare resources folders
+      - name: Create Resource Directories
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path resources/bin | Out-Null
-          New-Item -ItemType Directory -Force -Path resources/python | Out-Null
+          New-Item -ItemType Directory -Force -Path resources/bin/git
+          New-Item -ItemType Directory -Force -Path resources/bin/gnupg
+          New-Item -ItemType Directory -Force -Path resources/python
 
-      # ----------------------------
-      # Bundle Git -> resources/bin/git (PortableGit)
-      # ----------------------------
-      - name: Bundle Git (PortableGit)
+      # --- BUNDLE GIT ---
+      - name: Bundle MinGit
+        if: steps.cache-tools.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $target = "resources/bin/git"
-          
-          # Check for git in multiple possible paths
-          if (Test-Path "$target/cmd/git.exe" -or (Test-Path "$target/bin/git.exe") -or (Test-Path "$target/mingw64/bin/git.exe")) {
-            Write-Host "Git already present."
-            exit 0
-          }
-
-          $url = "https://github.com/git-for-windows/git/releases/download/$env:GITFORWINDOWS_TAG/$env:PORTABLEGIT_EXE"
-          $installer = Join-Path $env:TEMP $env:PORTABLEGIT_EXE
-          $tmp = Join-Path $env:TEMP ("portablegit_" + [Guid]::NewGuid().ToString("N"))
-
+          $url = "https://github.com/git-for-windows/git/releases/download/$env:GIT_TAG/$env:GIT_ZIP"
+          $dest = "resources/bin/git"
           Write-Host "Downloading Git..."
-          curl.exe -L $url -o $installer
-          if (-not (Test-Path $installer)) {
-            throw "Download failed for $url"
-          }
+          curl.exe -L $url -o git.zip
+          Expand-Archive -Path git.zip -DestinationPath $dest -Force
+          Remove-Item git.zip
 
-          Write-Host "Extracting PortableGit..."
-          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
-          & "C:\Program Files\7-Zip\7z.exe" x $installer "-o$tmp" | Out-Null
-
-          Write-Host "Checking extracted files..."
-          Get-ChildItem -Path $tmp -Recurse | Select-Object FullName
-
-          function HasGit($p) {
-            return (Test-Path (Join-Path $p "cmd\git.exe")) -or
-                   (Test-Path (Join-Path $p "bin\git.exe")) -or
-                   (Test-Path (Join-Path $p "mingw64\bin\git.exe"))
-          }
-
-          $gitRoot = $null
-
-          # 1) Check tmp itself first (common case)
-          if (HasGit $tmp) {
-            $gitRoot = $tmp
-          } else {
-            # 2) Otherwise search subdirectories for a folder that contains git
-            $gitRoot = Get-ChildItem -Path $tmp -Directory -Recurse |
-              Where-Object { HasGit $_.FullName } |
-              Select-Object -First 1 |
-              ForEach-Object { $_.FullName }
-          }
-
-          if (-not $gitRoot) {
-            Write-Host "PortableGit extraction listing (first 200 items):"
-            Get-ChildItem -Path $tmp -Recurse -File | Select-Object -First 200 FullName
-            throw "PortableGit extraction failed: git.exe not found in cmd/bin/mingw64/bin."
-          }
-
-          Remove-Item -Recurse -Force $target -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $target | Out-Null
-          Copy-Item -Path (Join-Path $gitRoot "*") -Destination $target -Recurse -Force
-
-          Remove-Item -Recurse -Force $tmp
-          Remove-Item -Force $installer
-
-      - name: Verify Git bundle
-        shell: pwsh
-        run: |
-          if (Test-Path "./resources/bin/git/cmd/git.exe") {
-            ./resources/bin/git/cmd/git.exe --version
-          } elseif (Test-Path "./resources/bin/git/bin/git.exe") {
-            ./resources/bin/git/bin/git.exe --version
-          } elseif (Test-Path "./resources/bin/git/mingw64/bin/git.exe") {
-            ./resources/bin/git/mingw64/bin/git.exe --version
-          } else {
-            throw "No git.exe found after bundling."
-          }
-
-      # ----------------------------
-      # Bundle GnuPG -> resources/bin/gnupg
-      # ----------------------------
+      # --- BUNDLE GNUPG ---
       - name: Bundle GnuPG
+        if: steps.cache-tools.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $targetDir = "resources/bin/gnupg"
-          if (Test-Path "$targetDir/bin/gpg.exe") { Write-Host "GnuPG already present."; exit 0 }
+          $url = "https://gnupg.org/ftp/gcrypt/binary/$env:GNUPG_EXE"
+          $temp_installer = "gpg_setup.exe"
+          $extract_path = "C:\temp_gpg"
+          
+          curl.exe -L $url -o $temp_installer
+          # Using 7-Zip (pre-installed on GitHub Runners) to extract the installer without running it
+          & "C:\Program Files\7-Zip\7z.exe" x $temp_installer "-o$extract_path" -y
+          
+          # Move only the core bin/lib/share files to our resources folder
+          Copy-Item -Path "$extract_path\*" -Destination "resources/bin/gnupg" -Recurse -Force
+          Remove-Item -Recurse -Force $extract_path
+          Remove-Item $temp_installer
 
-          $installer = Join-Path $env:TEMP $env:GNUPG_EXE
-          $tmp = "C:\temp_gpg_$([Guid]::NewGuid().ToString('N'))"
-
-          curl.exe -L "https://gnupg.org/ftp/gcrypt/binary/$env:GNUPG_EXE" -o $installer
-          & "C:\Program Files\7-Zip\7z.exe" x $installer "-o$tmp" | Out-Null
-
-          $gpgRoot = $null
-          if (Test-Path (Join-Path $tmp "bin\gpg.exe")) {
-            $gpgRoot = $tmp
-          } else {
-            $gpgRoot = Get-ChildItem -Path $tmp -Directory -Recurse |
-              Where-Object { Test-Path (Join-Path $_.FullName "bin\gpg.exe") } |
-              Select-Object -First 1 |
-              ForEach-Object { $_.FullName }
-          }
-
-          if (-not $gpgRoot) { throw "GnuPG extraction failed: bin\gpg.exe not found." }
-
-          Remove-Item -Recurse -Force $targetDir -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-          Copy-Item -Path (Join-Path $gpgRoot "*") -Destination $targetDir -Recurse -Force
-
-          Remove-Item -Recurse -Force $tmp
-          Remove-Item -Force $installer
-
-      - name: Verify GnuPG bundle
+      # --- BUNDLE PYTHON ---
+      - name: Bundle Python Embeddable
+        if: steps.cache-tools.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
+          $url = "https://www.python.org/ftp/python/$env:PY_VER/$env:PY_ZIP"
+          $dest = "resources/python"
+          curl.exe -L $url -o python.zip
+          Expand-Archive -Path python.zip -DestinationPath $dest -Force
+          Remove-Item python.zip
+
+      - name: Verify Bundles
+        shell: pwsh
+        run: |
+          Write-Host "Verifying Git..."
+          ./resources/bin/git/cmd/git.exe --version
+          Write-Host "Verifying GnuPG..."
           ./resources/bin/gnupg/bin/gpg.exe --version
-          ./resources/bin/gnupg/bin/gpgconf.exe --version
+          Write-Host "Verifying Python..."
+          ./resources/python/python.exe --version
 
-      # ----------------------------
-      # Bundle Python embeddable -> resources/python
-      # ----------------------------
-      - name: Bundle Python embeddable
+      # --- BUILD STEP ---
+      - name: Build App
         shell: pwsh
         run: |
-          $target = "resources/python"
-          if (Test-Path "$target/python.exe") { Write-Host "Python already present."; exit 0 }
-
-          $zipName = $env:PY_EMBED_ZIP
-          $url = "https://www.python.org/ftp/python/$env:PY_EMBED_VER/$zipName"
-          $zip = Join-Path $env:TEMP $zipName
-
-          curl.exe -L $url -o $zip
-          Expand-Archive -Path $zip -DestinationPath $target -Force
-          Remove-Item -Force $zip
-
-          if (-not (Test-Path "$target/python.exe")) { throw "python.exe missing after extraction." }
-
-      - name: Verify Python bundle
-        shell: pwsh
-        run: |
-          ./resources/python/python.exe -V
-
-      # ----------------------------
-      # Build backend EXE (PyInstaller)
-      # ----------------------------
-      - name: Install Python deps (build-time)
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller
-
-      - name: Build backend EXE
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path backend-dist/wizard-backend | Out-Null
-          pyinstaller wizard-backend.spec --noconfirm --clean --distpath backend-dist/wizard-backend --workpath build-backend
-          if (-not (Test-Path "backend-dist/wizard-backend/wizard-backend.exe")) {
-            throw "wizard-backend.exe not found in backend-dist/wizard-backend"
-          }
-
-      # ----------------------------
-      # Build Electron Windows installer / EXE
-      # ----------------------------
-      - name: Install Node deps
-        shell: pwsh
-        run: |
-          npm ci --no-audit --no-fund
-
-      - name: Build Windows artifacts (NSIS)
-        shell: pwsh
+          npm ci
+          # Ensure your electron-builder config points to the 'resources' folder
+          npx electron-builder --win nsis
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          npx electron-builder --win nsis
 
-      - name: Upload dist artifact (always)
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-dist
-          path: dist/**
-          retention-days: 7
-
-      - name: Publish to GitHub Release (tag only)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/**
+          name: windows-installer
+          path: dist/*.exe
