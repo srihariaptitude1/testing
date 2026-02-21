@@ -56,8 +56,6 @@ jobs:
 
       # ----------------------------
       # Bundle Git -> resources/bin/git (PortableGit)
-      # Fix: PortableGit often extracts directly into $tmp (no top folder),
-      # so we must check $tmp itself + fallback to cmd/bin/mingw64 paths.
       # ----------------------------
       - name: Bundle Git (PortableGit)
         shell: pwsh
@@ -72,10 +70,18 @@ jobs:
           $installer = Join-Path $env:TEMP $env:PORTABLEGIT_EXE
           $tmp = Join-Path $env:TEMP ("portablegit_" + [Guid]::NewGuid().ToString("N"))
 
+          Write-Host "Downloading Git..."
           curl.exe -L $url -o $installer
-          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          if (-not (Test-Path $installer)) {
+            throw "Download failed for $url"
+          }
 
+          Write-Host "Extracting PortableGit..."
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
           & "C:\Program Files\7-Zip\7z.exe" x $installer "-o$tmp" | Out-Null
+
+          Write-Host "Checking extracted files..."
+          Get-ChildItem -Path $tmp -Recurse | Select-Object FullName
 
           function HasGit($p) {
             return (Test-Path (Join-Path $p "cmd\git.exe")) -or
@@ -134,7 +140,13 @@ jobs:
           $installer = Join-Path $env:TEMP $env:GNUPG_EXE
           $tmp = "C:\temp_gpg_$([Guid]::NewGuid().ToString('N'))"
 
+          Write-Host "Downloading GnuPG..."
           curl.exe -L "https://gnupg.org/ftp/gcrypt/binary/$env:GNUPG_EXE" -o $installer
+          if (-not (Test-Path $installer)) {
+            throw "Download failed for GnuPG."
+          }
+
+          Write-Host "Extracting GnuPG..."
           & "C:\Program Files\7-Zip\7z.exe" x $installer "-o$tmp" | Out-Null
 
           $gpgRoot = $null
@@ -175,7 +187,13 @@ jobs:
           $url = "https://www.python.org/ftp/python/$env:PY_EMBED_VER/$zipName"
           $zip = Join-Path $env:TEMP $zipName
 
+          Write-Host "Downloading Python..."
           curl.exe -L $url -o $zip
+          if (-not (Test-Path $zip)) {
+            throw "Download failed for Python."
+          }
+
+          Write-Host "Extracting Python..."
           Expand-Archive -Path $zip -DestinationPath $target -Force
           Remove-Item -Force $zip
 
